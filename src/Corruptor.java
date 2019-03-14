@@ -88,15 +88,19 @@ public class Corruptor {
                 buffer = corruptByteBuffer(buffer, probability);
                 outputStream.write(buffer);
             }
+            inputStream.close();
+            outputStream.close();
+
         } catch (IOException ex) {
             ex.printStackTrace();
+            System.exit(1);
         }
     }
 
     public void printErrors() {
         // print some stats about the way errors are distributed within bytes
         System.out.println("____________________________________");
-        System.out.println("number bit of errors in same byte");
+        System.out.println("number of bit errors in same byte");
         for(int i = 0; i < globalBitErrorCounter.length; i++) {
             System.out.println(i + "-bit errors: " + globalBitErrorCounter[i]);
         }
@@ -111,6 +115,64 @@ public class Corruptor {
         }
     }
 
+    public double entropyByteBuffer(byte[] in) {
+        // calculate a buffer's entropy.
+        // can't be used to calculate a file's entropy by splitting it into buffers because entropy isn't linear
+        int[] byteOccurence = new int[256];
+        for(int i = 0; i < byteOccurence.length; i++) {
+            byteOccurence[i] = 0;
+        }
+        for(int i = 0; i < in.length; i++) {
+            byteOccurence[in[i] + 128]++;
+        }
+        double entropy = 0;
+        for(int i = 0; i < byteOccurence.length; i++) {
+            if(byteOccurence[i] != 0) {
+                // avoid log(0)
+                double probability = (byteOccurence[i] * 1.0) / (in.length * 1.0);
+                entropy -= probability * Math.log(probability);
+            }
+        }
+        return entropy;
+    }
+
+    public double entropyFile(String inputFile) {
+        // calculate a file's entropy
+        try (
+                InputStream inputStream = new FileInputStream(inputFile);
+        ) {
+            byte[] buffer = new byte[BUFFER_SIZE];
+            long byteCount = 0;
+            long[] byteOccurence = new long[256];
+            for(int i = 0; i < byteOccurence.length; i++) {
+                byteOccurence[i] = 0;
+            }
+
+            while (inputStream.read(buffer) != -1) {
+                for(int i = 0; i < buffer.length; i++) {
+                    byteOccurence[buffer[i] + 128]++;
+                    byteCount++;
+                }
+            }
+            inputStream.close();
+
+            double entropy = 0;
+            for(int i = 0; i < byteOccurence.length; i++) {
+                if(byteOccurence[i] != 0) {
+                    // avoid log(0)
+                    double probability = (byteOccurence[i] * 1.0) / (byteCount * 1.0);
+                    entropy -= probability * Math.log(probability) / Math.log(2.0);
+                }
+            }
+            return entropy;
+
+        } catch (IOException ex) {
+            ex.printStackTrace();
+            System.exit(1);
+            return 0;
+        }
+    }
+
     public static void main(String[] args) {
         // create the corruptor and give it a seed
         // the seed determines the exact bits that will be corrupted in the file
@@ -119,12 +181,12 @@ public class Corruptor {
         // the nerdy consequence of this and the fact we used bit inversion to create errors
         // is that this program is able to un-corrupt a file by putting in exacly the same parameters
 
-        Corruptor corruptor = new Corruptor(1);
+        Corruptor corruptor = new Corruptor(0);
 
         // this is just setup so that all input files are named in.<typeFile> and out.<typeFile>
         String typeFile = "jpg";
         // set the probability of error for each bit
-        double probability = 0.0001;
+        double probability = 1.0 / 100000.0;
         // do the corruption!
         System.out.println("____________________________________");
         System.out.println("running");
@@ -134,5 +196,10 @@ public class Corruptor {
         // some sweet statistics
         corruptor.printChosenBits();
         corruptor.printErrors();
+
+        /*
+        // Calculate Shannon's entropy on a file, byte-wise
+        System.out.println("entropy: " + corruptor.entropyFile("in.jpg"));
+        */
     }
 }
