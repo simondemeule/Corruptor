@@ -1,3 +1,5 @@
 
 .idea/
 Corruptor.iml
+src/.DS_Store
+out/production/Corruptor/Corruptor.class
