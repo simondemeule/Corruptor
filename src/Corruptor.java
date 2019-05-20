@@ -1,16 +1,21 @@
 import java.io.*;
 import java.util.Random;
+import java.util.Scanner;
 
 // Written by Simon Demeule
 // Feed this thing a file and it will break it.
 // Adds randomly distributed bit errors to any kind of file.
 
 public class Corruptor {
-    private static final int BUFFER_SIZE = 4096; // 4KB
+    private final int BUFFER_SIZE = 4096; // 4KB
 
-    private static int[] globalBitErrorCounter = {0, 0, 0, 0, 0, 0, 0, 0, 0};
+    private byte[] buffer = new byte[BUFFER_SIZE];
 
-    private static int[] globalChosenBitCounter = {0, 0, 0, 0, 0, 0, 0, 0};
+    private long[] errorsChosenByteInBuffer = new long[BUFFER_SIZE];
+
+    private long[] errorsNumberBitsInByte = new long[9];
+
+    private long[] errorsChosenBitInByte = new long[8];
 
     private Random random;
 
@@ -20,8 +25,21 @@ public class Corruptor {
     }
 
     private double nonZeroSuccessInTrials(int trials, double probability) {
-        // fancy statistics stuff so that we can save some time by applying the randomness at the byte
-        // level rather than the bit level, all while retaining the same random distribution.
+        // this calculates the probability of no errors occurring in a sequence of <trial> bits each
+        // with an independent <probability> of error,
+
+        // in cases where the probability of an error is very low, we can use this test to batch together
+        // groups of bits rather than going one by one, vastly reducing processing time.
+
+        // we compare this probability to a random variable situated between 0 and 1.
+        // the test succeeds when the random variable is smaller than the calculated probability.
+
+        // if the test succeeds, we must corrupt at least one bit in the group.
+        // for the remaining bits, we must recursively apply this test
+
+        // if the test fails, no bit will be corrupted, and we can move on.
+
+        // below is the mathematical derivation of this function
 
         // B(success, trials) is a bernoulli random process describing a set of independent trials
         // B(success != 0, trials) = 1 - B(success = 0, trials)
@@ -31,117 +49,172 @@ public class Corruptor {
         return 1.0 - Math.pow(1.0 - probability, trials);
     }
 
-    public byte corruptByte(byte in, double probability) {
-        // corrupt a byte
-        // the set of bits we can choose to corrupt
-        int[] uncorruptedBits = {0, 1, 2, 3, 4, 5, 6, 7};
-        // the number of bits left to be chosen
-        int remainingBits = 8;
-        // the number of trials to corrupt individual bits
-        int trials = 8;
-        // an error counter
-        int localBitErrorCounter = 0;
-        // if the random variable tells us there is at least one error in the set of remaining trials
-        if(random.nextDouble() < nonZeroSuccessInTrials(trials, probability)) {
-            do {
+    private void corruptBufferAt(int index, double probability) {
+        // this corrupts at least one bit at a given internal buffer location and iteratively attempts to
+        // corrupt further bits given a probability
+
+        // given a low probability, the vast majority of bytes will only have single bit errors
+        // these don't require a structure for making sure we don't corrupt the same bit twice
+        // we can check in advance if we need to corrupt an extra bit and only declare the structure
+        // if we actually need it
+        if(!(random.nextDouble() < nonZeroSuccessInTrials(7, probability))) {
+            // corrupt just one bit, simple
+            // choose a bit to corrupt
+            int chosenBit = random.nextInt(8);
+            // corrupt the byte by inverting the chosen bit
+            buffer[index] = (byte) (buffer[index] ^ (1 << chosenBit));
+            // increment error counters
+            errorsChosenBitInByte[chosenBit]++;
+            errorsNumberBitsInByte[1]++;
+            errorsChosenByteInBuffer[index]++;
+        } else {
+            // corrupt at least two bits, must setup some stuff
+            // the set of bits we can choose to corrupt
+            int[] uncorruptedBits = {0, 1, 2, 3, 4, 5, 6, 7};
+            // the number of bits left to be chosen
+            int remainingBits = 8;
+            // the number of trials to corrupt individual bits
+            int trials = 8;
+            // the number of bits that must be corrupted at least
+            int mustCorrupt = 2;
+            // an error counter
+            int errorsNumberBits = 0;
+
+            while(trials > 0 && (mustCorrupt-- > 0 || random.nextDouble() < nonZeroSuccessInTrials(trials, probability))) {
                 // choose a bit to corrupt within those that remain
                 int chosenBitIndex = random.nextInt(remainingBits);
                 int chosenBit = uncorruptedBits[chosenBitIndex];
                 // remove that bit from the remaining choices
                 // (swap the last available bit with the one we chose and decrease the number of remaining bits)
                 uncorruptedBits[chosenBitIndex] = uncorruptedBits[--remainingBits];
-                // corrupt the input byte by inverting the chosen bit
-                in = (byte) (in ^ (1 << chosenBit));
+                // corrupt the byte by inverting the chosen bit
+                buffer[index] = (byte) (buffer[index] ^ (1 << chosenBit));
                 // decrement the number of trials remaining
                 trials--;
                 // increment error counter
-                localBitErrorCounter++;
-                globalChosenBitCounter[chosenBit]++;
-            } while (trials > 0 && random.nextDouble() < nonZeroSuccessInTrials(trials, probability) );
-            // repeat until we run out of trials or out of luck
+                errorsNumberBits++;
+                errorsChosenBitInByte[chosenBit]++;
+                errorsChosenByteInBuffer[index]++;
+            }
+            // increment error counter according to the number of bit errors in that byte
+            errorsNumberBitsInByte[errorsNumberBits]++;
         }
-        // increment error counter according to the number of bit errors in that byte
-        globalBitErrorCounter[localBitErrorCounter]++;
-        return in;
     }
 
-    public byte[] corruptByteBuffer(byte[] in, double probability) {
-        // corrupt a buffer of bytes
-        byte[] out = new byte[in.length];
-        for(int i = 0; i < out.length; i++) {
-            // apply byte corruption over buffer
-            out[i] = corruptByte(in[i], probability);
+    private void corruptBufferRange(int from, int to, double probability) {
+        // this corrupts the internal buffer by recursively splitting it at random points when the corruption trial succeeds,
+        // similarly to quicksort.
+        if(from < to && random.nextDouble() < nonZeroSuccessInTrials((to - from + 1) * 8, probability)) {
+            // at least one bit corrupted in range
+            int split = random.nextInt(to - from + 1) + from;
+            // choose a split point and corrupt at least a bit from that byte
+            corruptBufferAt(split, probability);
+            // recur on the remaining part of the range
+            if(split == from) {
+                // special case, split occurred at beginning of range;
+                corruptBufferRange(from + 1, to, probability);
+            } else if (split == to) {
+                // special case, split occurred at end of range
+                corruptBufferRange(from, to - 1, probability);
+            } else {
+                // general case, split occurred at middle of range
+                corruptBufferRange(from, split - 1, probability);
+                corruptBufferRange(split + 1, to, probability);
+            }
+        } else if(from == to && random.nextDouble() < nonZeroSuccessInTrials( 8, probability)) {
+            // range contains a single byte
+            corruptBufferAt(from, probability);
+        } else {
+            errorsNumberBitsInByte[0] += to - from + 1;
         }
-        return out;
     }
 
-    public void corruptFile(String inputFile, String outputFile, double probability) {
+    private void corruptBuffer(double probability) {
+        // corrupts the internal buffer
+        corruptBufferRange(0, BUFFER_SIZE - 1, probability);
+    }
+
+    public void corruptFile(File inputFile, File outputFile, double probability) {
+        System.out.println("____________________________________");
+        System.out.println("Running");
         // corrupt an entire file
+        for(int i = 0; i < errorsChosenByteInBuffer.length; i++) {
+            errorsChosenByteInBuffer[i] = 0;
+        }
+        for(int i = 0; i < errorsNumberBitsInByte.length; i++) {
+            errorsNumberBitsInByte[i] = 0;
+        }
+        for(int i = 0; i < errorsChosenBitInByte.length; i++) {
+            errorsChosenBitInByte[i] = 0;
+        }
         try (
-                InputStream inputStream = new FileInputStream(inputFile);
-                OutputStream outputStream = new FileOutputStream(outputFile);
+            InputStream inputStream = new FileInputStream(inputFile);
+            OutputStream outputStream = new FileOutputStream(outputFile);
         ) {
-            byte[] buffer = new byte[BUFFER_SIZE];
-
+            double buffersTotal = inputFile.length() / (BUFFER_SIZE * 1.0);
+            int bufferCounter = 0;
             while (inputStream.read(buffer) != -1) {
                 // apply buffer corruption over file
-                buffer = corruptByteBuffer(buffer, probability);
+                corruptBuffer(probability);
                 outputStream.write(buffer);
+                // display progress
+                bufferCounter++;
+                System.out.print("\r" + String.format("%.2f", (bufferCounter / buffersTotal) * 100) + "%");
             }
+            System.out.println("\r" + String.format("%.2f", 100.0) + "%");
             inputStream.close();
             outputStream.close();
-
-        } catch (IOException ex) {
-            ex.printStackTrace();
+            System.out.println("____________________________________");
+            System.out.println("Done");
+        } catch (IOException exception) {
+            exception.printStackTrace();
             System.exit(1);
         }
     }
 
-    public void printErrors() {
+    public void printErrorsPerByte() {
         // print some stats about the way errors are distributed within bytes
         System.out.println("____________________________________");
-        System.out.println("number of bit errors in same byte");
-        for(int i = 0; i < globalBitErrorCounter.length; i++) {
-            System.out.println(i + "-bit errors: " + globalBitErrorCounter[i]);
+        System.out.println("Number of bit errors in same byte");
+        System.out.println("");
+        long totalBitErrors = 0;
+        long totalBits = 0;
+        for(int i = 0; i < errorsNumberBitsInByte.length; i++) {
+            System.out.println(i + "-bit errors: " + errorsNumberBitsInByte[i]);
+            totalBitErrors += i * errorsNumberBitsInByte[i];
+            totalBits += 8 * errorsNumberBitsInByte[i];
         }
+        double probability = totalBitErrors / (1.0 * totalBits);
+        System.out.println("____________________________________");
+        System.out.println("Total bits corrupted: " + totalBitErrors + " of " + totalBits);
+        System.out.println("Measured probability: " + probability);
     }
 
-    public void printChosenBits() {
+    public void printErrorsPerBit() {
         // print some stats about which bits were chosen to be corrupted
         System.out.println("____________________________________");
-        System.out.println("bit chosen for error");
-        for(int i = 0; i < globalChosenBitCounter.length; i++) {
-            System.out.println("bit-" + i + " errors: " + globalChosenBitCounter[i]);
+        System.out.println("Bit chosen for error");
+        System.out.println("");
+        for(int i = 0; i < errorsChosenBitInByte.length; i++) {
+            System.out.println("bit-" + i + " errors: " + errorsChosenBitInByte[i]);
         }
     }
 
-    public double entropyByteBuffer(byte[] in) {
-        // calculate a buffer's entropy.
-        // can't be used to calculate a file's entropy by splitting it into buffers because entropy isn't linear
-        int[] byteOccurence = new int[256];
-        for(int i = 0; i < byteOccurence.length; i++) {
-            byteOccurence[i] = 0;
+    public void printErrorsPerBuffer() {
+        // print some stats about which bytes were chosen to be corrupted
+        System.out.println("____________________________________");
+        System.out.println("Byte chosen for error");
+        System.out.println("");
+        for(int i = 0; i < errorsChosenByteInBuffer.length; i++) {
+            System.out.println("byte-" + i + " errors: " + errorsChosenByteInBuffer[i]);
         }
-        for(int i = 0; i < in.length; i++) {
-            byteOccurence[in[i] + 128]++;
-        }
-        double entropy = 0;
-        for(int i = 0; i < byteOccurence.length; i++) {
-            if(byteOccurence[i] != 0) {
-                // avoid log(0)
-                double probability = (byteOccurence[i] * 1.0) / (in.length * 1.0);
-                entropy -= probability * Math.log(probability);
-            }
-        }
-        return entropy;
     }
 
-    public double entropyFile(String inputFile) {
+    public double entropyFile(File inputFile) {
         // calculate a file's entropy
         try (
                 InputStream inputStream = new FileInputStream(inputFile);
         ) {
-            byte[] buffer = new byte[BUFFER_SIZE];
             long byteCount = 0;
             long[] byteOccurence = new long[256];
             for(int i = 0; i < byteOccurence.length; i++) {
@@ -173,33 +246,99 @@ public class Corruptor {
         }
     }
 
+    // something is wrong with probabilities.
+    //
+    // given    -> measured
+    // 0.1      -> 0.18
+    // 0.01     -> 0.022
+    // 0.001    -> 0.0023
+    // 0.0001   -> 0.00022
+    // 0.00001  -> 0.000011
+    // 0.000001 -> 0.0000011
+    //
+    // this effect is reduced by subdividing buffers.
+    // this effect is not increased further past a certain buffer size.
+    // this effect seems independent of file size.
+    //
+    // maybe this just has to do with numerical accuracy of pow and random.
+    // -> unlikely. verified with BigDecimal nonZeroSuccessesInTrials
+    //
+    // maybe this is a subtle error in recursion that compounds over higher probabilities.
+    // -> unlikely. all edge cases have been thoroughly verified by observing the call hierarchy
+
     public static void main(String[] args) {
+        File inputFile = null;
+        File outputFile = null;
+        double probability = 0;
+        int seed = 0;
+
+        if(args.length == 0) {
+            Scanner scanner = new Scanner(System.in);
+            boolean valid;
+
+            System.out.println("____________________________________");
+            System.out.println("Input file path");
+            valid = false;
+            do {
+                String inputFileName = scanner.next();
+                inputFile = new File(inputFileName);
+                int index = inputFileName.indexOf(".");
+                outputFile = new File(inputFileName.substring(0, index + 1) + "corrupt." + inputFileName.substring(index + 1));
+                valid = inputFile.exists();
+                if(!valid) {
+                    System.out.println("____________________________________");
+                    System.out.println("Given file does not exist. Try again");
+                }
+            } while (!valid);
+
+            System.out.println("____________________________________");
+            System.out.println("Bitwise corruption probability (0-1)");
+            valid = false;
+            do {
+                if(!scanner.hasNextDouble()) {
+                    scanner.next();
+                } else {
+                    probability = scanner.nextDouble();
+                    valid = probability < 1.0 && probability > 0.0;
+                }
+                if(!valid) {
+                    System.out.println("____________________________________");
+                    System.out.println("Invalid input. Try again");
+                }
+            } while (!valid);
+
+            System.out.println("____________________________________");
+            System.out.println("Random seed (integer)");
+            valid = false;
+            do {
+                if(!scanner.hasNextInt()) {
+                    scanner.next();
+                } else {
+                    seed = scanner.nextInt();
+                    valid = true;
+                }
+                if(!valid) {
+                    System.out.println("____________________________________");
+                    System.out.println("Invalid input. Try again");
+                }
+            } while (!valid);
+        } else {
+            throw new RuntimeException("Invalid arguments given");
+        }
+
+        // TODO: add argument handling for command-line operation
+
         // create the corruptor and give it a seed
         // the seed determines the exact bits that will be corrupted in the file
-        // running the program twice with the same settings will yeild the same results
+        // running the program twice with the same settings will yield the same results
 
         // the nerdy consequence of this and the fact we used bit inversion to create errors
-        // is that this program is able to un-corrupt a file by putting in exacly the same parameters
+        // is that this program is able to un-corrupt a file by putting in exactly the same parameters
 
-        Corruptor corruptor = new Corruptor(0);
-
-        // this is just setup so that all input files are named in.<typeFile> and out.<typeFile>
-        String typeFile = "jpg";
-        // set the probability of error for each bit
-        double probability = 1.0 / 100000.0;
-        // do the corruption!
-        System.out.println("____________________________________");
-        System.out.println("running");
-        corruptor.corruptFile("in." + typeFile, "out." + typeFile, probability);
-        System.out.println("____________________________________");
-        System.out.println("done");
-        // some sweet statistics
-        corruptor.printChosenBits();
-        corruptor.printErrors();
-
-        /*
-        // Calculate Shannon's entropy on a file, byte-wise
-        System.out.println("entropy: " + corruptor.entropyFile("in.jpg"));
-        */
+        Corruptor corruptor = new Corruptor(seed);
+        corruptor.corruptFile(inputFile, outputFile, probability);
+        corruptor.printErrorsPerBit();
+        corruptor.printErrorsPerByte();
+        System.out.println("");
     }
 }
