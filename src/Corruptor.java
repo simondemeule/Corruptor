@@ -266,18 +266,18 @@ public class Corruptor {
     // maybe this is a subtle error in recursion that compounds over higher probabilities.
     // -> unlikely. all edge cases have been thoroughly verified by observing the call hierarchy
 
-    public static void main(String[] args) {
+    public static void main(String[] arguments) {
         File inputFile = null;
         File outputFile = null;
         double probability = 0;
         int seed = 0;
 
-        if(args.length == 0) {
+        if(arguments.length == 0) {
             Scanner scanner = new Scanner(System.in);
             boolean valid;
 
             System.out.println("____________________________________");
-            System.out.println("Input file path");
+            System.out.println("Input file path (drag and drop)");
             valid = false;
             do {
                 String inputFileName = scanner.next();
@@ -322,6 +322,11 @@ public class Corruptor {
                     System.out.println("Invalid input. Try again");
                 }
             } while (!valid);
+        } else if (arguments.length == 4) {
+            inputFile = new File(arguments[0]);
+            outputFile = new File(arguments[1]);
+            probability = Double.parseDouble(arguments[2]);
+            seed = Integer.parseInt(arguments[3]);
         } else {
             throw new RuntimeException("Invalid arguments given");
         }

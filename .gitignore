@@ -5,3 +5,6 @@ src/.DS_Store
 out/production/Corruptor/Corruptor.class
 .DS_Store
 out/production/Corruptor/Corruptor.command
+*.jpg
+*.png
+*.jpg
