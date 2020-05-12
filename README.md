@@ -13,3 +13,7 @@ On Windows, go to /src/ and execute Corruptor.java with no arguments for interac
 Bitwise corruption probability is the probability that a single bit will get corrupted (inverted), on a scale from 0 to 1 (0 to 100%).
 
 The random seed is a whole number deterministically decides the random distribution of the errors.
+
+# Interactive Mode Screenshot
+
+![Screenshot](/screenshot.png)
